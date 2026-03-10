@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Facebook Comment Exporter
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Open-source Facebook comment scraper with nested reply support, auto-downloads JSON export, hierarchical structure, multi-language support, and progressive virtual-scroll scraping
 // @author       Rick Bouma (Disrex Group)
 // @downloadURL  https://github.com/Amorydev/Comments-Exporter-FB/raw/refs/heads/main/facebook-comment-scraper.user.js
@@ -32,16 +32,50 @@
     'use strict';
 
     let isScrapingInProgress = false;
-    let scrapedArticles = new Set();    // DOM elements already processed (deduplication)
+    let scrapedArticles = new Set();    // DOM elements successfully extracted (deduplication)
     let observedArticles = new Set();   // ALL articles ever seen in DOM (via MutationObserver)
     let articleObserver = null;
     let articleToCommentMap = new Map();
     let replyButtonParentMap = new Map();
-    let stats = {
-        mainComments: 0,
-        replies: 0,
-        buttonsClicked: 0
-    };
+    let stats = { mainComments: 0, replies: 0, buttonsClicked: 0 };
+    let timerInterval = null;
+    let timerStart = 0;
+
+    function startTimer() {
+        timerStart = Date.now();
+        timerInterval = setInterval(() => {
+            const el = document.getElementById('fb-elapsed');
+            if (el) {
+                const s = Math.floor((Date.now() - timerStart) / 1000);
+                const mm = String(Math.floor(s / 60)).padStart(2, '0');
+                const ss = String(s % 60).padStart(2, '0');
+                el.textContent = `${mm}:${ss}`;
+            }
+        }, 1000);
+    }
+
+    function stopTimer() {
+        clearInterval(timerInterval);
+        timerInterval = null;
+    }
+
+    // Reconstruct text from DOM nodes, converting <img alt="😂"> to emoji characters.
+    // Facebook renders emoji as <img> — textContent() misses them entirely.
+    function extractTextWithEmoji(element) {
+        let result = '';
+        for (const node of element.childNodes) {
+            if (node.nodeType === 3) {
+                result += node.textContent;
+            } else if (node.nodeType === 1) {
+                if (node.tagName === 'IMG') {
+                    result += node.getAttribute('alt') || node.getAttribute('aria-label') || '';
+                } else {
+                    result += extractTextWithEmoji(node);
+                }
+            }
+        }
+        return result;
+    }
 
     // MutationObserver: capture every article the moment it enters the DOM.
     // Critical for Facebook's virtual DOM - elements may be added then removed as user scrolls.
@@ -95,7 +129,9 @@
         { key: 'parentId',           label: 'Parent Comment ID',       default: false },
         { key: 'profileImage',       label: 'Ảnh đại diện (URL)',      default: false },
         { key: 'hasUnloadedReplies', label: 'Còn reply chưa load',     default: false },
-        { key: 'isMedia',            label: 'Sticker/GIF/Ảnh',         default: false },
+        { key: 'isMedia',            label: 'Là Sticker/GIF/Ảnh?',    default: false },
+        { key: 'tagName',            label: 'Người được tag (@)',       default: true  },
+        { key: 'stickerUrl',         label: 'URL Sticker/GIF',         default: false },
     ];
 
     // Add floating scrape button with max limit input
@@ -128,9 +164,9 @@
         `).join('');
 
         container.innerHTML = `
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                <strong style="font-size:14px;color:#1877f2;">FB Comment Scraper</strong>
-                <span style="font-size:10px;color:#aaa;">v1.2</span>
+            <div id="fb-scraper-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;cursor:move;user-select:none;padding-bottom:8px;border-bottom:1px solid #f0f2f5;">
+                <strong style="font-size:14px;color:#1877f2;">⠿ FB Comment Scraper</strong>
+                <span style="font-size:10px;color:#aaa;">v1.3</span>
             </div>
 
             <div style="margin-bottom:10px;">
@@ -174,6 +210,7 @@
                 <div><strong>Main:</strong> <span id="main-count">0</span> &nbsp;|&nbsp; <strong>Replies:</strong> <span id="reply-count">0</span></div>
                 <div><strong>Buttons clicked:</strong> <span id="button-count">0</span></div>
                 <div><strong>Đã cào:</strong> <span id="scraped-count">0</span> / <span id="max-limit">∞</span></div>
+                <div><strong>⏱ Thời gian:</strong> <span id="fb-elapsed">00:00</span></div>
             </div>
         `;
 
@@ -198,6 +235,31 @@
             e.stopPropagation();
             document.querySelectorAll('input[name="fb-field"]:not([disabled])').forEach(cb => cb.checked = false);
         };
+
+        // Draggable panel
+        const header = document.getElementById('fb-scraper-header');
+        let dragging = false, dragStartX = 0, dragStartY = 0;
+
+        header.addEventListener('mousedown', (e) => {
+            if (e.target.closest('button, input, label')) return;
+            dragging = true;
+            dragStartX = e.clientX - container.getBoundingClientRect().left;
+            dragStartY = e.clientY - container.getBoundingClientRect().top;
+            container.style.right = 'auto';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!dragging) return;
+            let x = e.clientX - dragStartX;
+            let y = e.clientY - dragStartY;
+            x = Math.max(0, Math.min(window.innerWidth - container.offsetWidth, x));
+            y = Math.max(0, Math.min(window.innerHeight - container.offsetHeight, y));
+            container.style.left = x + 'px';
+            container.style.top = y + 'px';
+        });
+
+        document.addEventListener('mouseup', () => { dragging = false; });
     }
 
     function updateUI(status, data = {}) {
@@ -697,7 +759,9 @@
                 depth: 0,
                 hasUnloadedReplies: false,
                 replyToAuthor: '',
-                isMedia: false
+                isMedia: false,
+                tagName: '',
+                stickerUrl: ''
             };
 
             // Extract profile image
@@ -783,7 +847,7 @@
             }
 
             // Extract comment text
-            // Handles: normal text, short comments (Môm, OK), emoji-only, @mention tags
+            // Uses extractTextWithEmoji() to catch emoji-only comments (Facebook stores as <img alt="😂">)
             const NOISE_PATTERNS = [
                 /^\d+\s*(min|hr|h|d|w|m|s|uur|dag|week|maand|jaar|geleden|ago|ngày|giờ|phút|tuần|tháng|năm)/i,
                 /^(Thích|Trả lời|Chia sẻ|Like|Reply|Share|Reageren|Delen|Gefällt mir|Antworten|Yêu thích)$/i,
@@ -792,33 +856,46 @@
 
             const textDivs = article.querySelectorAll('div[dir="auto"]');
             let bestText = '';
-            for (let div of textDivs) {
-                const text = div.textContent.trim();
+            for (const div of textDivs) {
+                // extractTextWithEmoji reconstructs text INCLUDING emoji from <img alt="😂">
+                const text = extractTextWithEmoji(div).trim();
                 if (!text || NOISE_PATTERNS.some(p => p.test(text))) continue;
-                // Prefer text that is NOT just the author name (may be @mention-only comment)
                 if (text !== comment.author) {
                     bestText = text;
                     break;
                 }
-                // Fallback: keep author-name-like text in case it IS a pure @mention comment
-                if (!bestText) bestText = text;
+                if (!bestText) bestText = text; // @mention-only fallback
             }
             comment.text = bestText;
 
-            // Sticker / GIF / Image fallback — comments with no text but a media attachment
+            // Extract @mentioned names (tagName field)
+            const mentionedNames = [];
+            const firstTextDiv = article.querySelector('div[dir="auto"]');
+            if (firstTextDiv) {
+                firstTextDiv.querySelectorAll('a').forEach(link => {
+                    const name = link.textContent.trim();
+                    if (name && name !== comment.author && name.length > 1) {
+                        mentionedNames.push(name);
+                    }
+                });
+            }
+            comment.tagName = mentionedNames.join(', ');
+
+            // Sticker / GIF / Image fallback — comments with media but no text
             if (!comment.text) {
-                // role="img" covers stickers, GIFs, and photo attachments
                 const mediaEls = article.querySelectorAll('[role="img"]');
                 for (const el of mediaEls) {
-                    if (el.closest('a[href]')) continue; // skip profile picture links
+                    if (el.closest('a[href]')) continue;
                     const label = el.getAttribute('aria-label') || '';
                     comment.text = label ? `[${label}]` : '[Sticker/GIF]';
                     comment.isMedia = true;
+                    // Capture sticker URL
+                    const img = el.tagName === 'IMG' ? el : el.querySelector('img');
+                    if (img) comment.stickerUrl = img.src || '';
                     break;
                 }
             }
 
-            // Last resort: any img with meaningful aria-label (not profile pic)
             if (!comment.text) {
                 const imgs = article.querySelectorAll('img[aria-label]');
                 for (const img of imgs) {
@@ -827,6 +904,7 @@
                     if (label.length > 1) {
                         comment.text = `[${label}]`;
                         comment.isMedia = true;
+                        comment.stickerUrl = img.src || '';
                         break;
                     }
                 }
@@ -1389,16 +1467,18 @@
 
             if (isCommentArticle(article)) {
 
-                // Use DOM element reference for reliable deduplication (outerHTML can be unstable)
+                // Only skip if article was SUCCESSFULLY extracted before.
+                // If previous attempt failed (text empty), allow retry in next progressive pass.
                 if (scrapedArticles.has(article)) {
                     skippedCount++;
                     continue;
                 }
-                scrapedArticles.add(article);
 
                 const comment = extractComment(article, scrapedCount);
 
                 if (comment && comment.text && comment.text.length > 0) {
+                    // Add to dedup set ONLY on success so failed articles can be retried
+                    scrapedArticles.add(article);
                     // NEW: Override depth detection with flat structure analysis
                     const flatDepth = detectDepthFlatStructure(article, articles, articleIndex, comments);
                     comment.depth = flatDepth.depth;
@@ -1646,6 +1726,7 @@
         observedArticles.clear();
         articleToCommentMap.clear();
         stats = { mainComments: 0, replies: 0, buttonsClicked: 0 };
+        startTimer();
 
         updateUI('🔄 Starting...', {
             statusText: 'Init',
@@ -1763,6 +1844,7 @@
 
         } catch (error) {
             stopArticleObserver();
+            stopTimer();
             console.error('❌ Error:', error);
             alert('Error! Check console.');
             updateUI('❌ Error', { statusText: 'Failed' });
@@ -1770,6 +1852,7 @@
                 updateUI('📥 Scrape Modal', { showStats: false });
             }, 3000);
         } finally {
+            stopTimer();
             isScrapingInProgress = false;
         }
     }
