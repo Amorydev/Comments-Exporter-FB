@@ -95,6 +95,7 @@
         { key: 'parentId',           label: 'Parent Comment ID',       default: false },
         { key: 'profileImage',       label: 'Ảnh đại diện (URL)',      default: false },
         { key: 'hasUnloadedReplies', label: 'Còn reply chưa load',     default: false },
+        { key: 'isMedia',            label: 'Sticker/GIF/Ảnh',         default: false },
     ];
 
     // Add floating scrape button with max limit input
@@ -695,7 +696,8 @@
                 isReply: false,
                 depth: 0,
                 hasUnloadedReplies: false,
-                replyToAuthor: ''
+                replyToAuthor: '',
+                isMedia: false
             };
 
             // Extract profile image
@@ -781,22 +783,52 @@
             }
 
             // Extract comment text
-            // Threshold is >= 1 to capture short/emoji-only comments like "Môm", "OK", "😂"
-            // Noise is excluded by the pattern filters below, not by length
+            // Handles: normal text, short comments (Môm, OK), emoji-only, @mention tags
+            const NOISE_PATTERNS = [
+                /^\d+\s*(min|hr|h|d|w|m|s|uur|dag|week|maand|jaar|geleden|ago|ngày|giờ|phút|tuần|tháng|năm)/i,
+                /^(Thích|Trả lời|Chia sẻ|Like|Reply|Share|Reageren|Delen|Gefällt mir|Antworten|Yêu thích)$/i,
+                /^(heeft geantwoord|replied|antwoord bekijken|antwoorden bekijken)$/i,
+            ];
+
             const textDivs = article.querySelectorAll('div[dir="auto"]');
+            let bestText = '';
             for (let div of textDivs) {
                 const text = div.textContent.trim();
-
-                if (text.length >= 1 &&
-                    text !== comment.author &&
-                    !text.match(/^\d+\s*(min|hr|h|d|w|m|s|uur|dag|geleden|ago)/i) &&
-                    !text.match(/^(Thích|Trả lời|Chia sẻ|Like|Reply|Share|Reageren|Delen|Gefällt mir|Antworten)$/i) &&
-                    !text.includes('heeft geantwoord') &&
-                    !text.includes('replied') &&
-                    !text.includes('antwoord bekijken') &&
-                    !text.includes('antwoorden bekijken')) {
-                    comment.text = text;
+                if (!text || NOISE_PATTERNS.some(p => p.test(text))) continue;
+                // Prefer text that is NOT just the author name (may be @mention-only comment)
+                if (text !== comment.author) {
+                    bestText = text;
                     break;
+                }
+                // Fallback: keep author-name-like text in case it IS a pure @mention comment
+                if (!bestText) bestText = text;
+            }
+            comment.text = bestText;
+
+            // Sticker / GIF / Image fallback — comments with no text but a media attachment
+            if (!comment.text) {
+                // role="img" covers stickers, GIFs, and photo attachments
+                const mediaEls = article.querySelectorAll('[role="img"]');
+                for (const el of mediaEls) {
+                    if (el.closest('a[href]')) continue; // skip profile picture links
+                    const label = el.getAttribute('aria-label') || '';
+                    comment.text = label ? `[${label}]` : '[Sticker/GIF]';
+                    comment.isMedia = true;
+                    break;
+                }
+            }
+
+            // Last resort: any img with meaningful aria-label (not profile pic)
+            if (!comment.text) {
+                const imgs = article.querySelectorAll('img[aria-label]');
+                for (const img of imgs) {
+                    if (img.closest('a[href]')) continue;
+                    const label = img.getAttribute('aria-label') || '';
+                    if (label.length > 1) {
+                        comment.text = `[${label}]`;
+                        comment.isMedia = true;
+                        break;
+                    }
                 }
             }
 
