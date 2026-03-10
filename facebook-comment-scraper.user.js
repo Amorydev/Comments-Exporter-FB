@@ -10,6 +10,7 @@
 // @match        https://m.facebook.com/*
 // @grant        none
 // @run-at       document-idle
+// @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
 // ==/UserScript==
 
 /*
@@ -31,14 +32,28 @@
     'use strict';
 
     let isScrapingInProgress = false;
-    let scrapedComments = new Set();
-    let articleToCommentMap = new Map(); // Track article elements to comment IDs
-    let replyButtonParentMap = new Map(); // Track which article had its reply button clicked
+    let scrapedArticles = new Set(); // Stores actual DOM element references for reliable deduplication
+    let articleToCommentMap = new Map();
+    let replyButtonParentMap = new Map();
     let stats = {
         mainComments: 0,
         replies: 0,
         buttonsClicked: 0
     };
+
+    const AVAILABLE_FIELDS = [
+        { key: 'author',             label: 'Tên tác giả',            default: true  },
+        { key: 'text',               label: 'Nội dung comment',        default: true,  required: true },
+        { key: 'timestamp',          label: 'Thời gian đăng',          default: true  },
+        { key: 'likes',              label: 'Số lượt thích',           default: true  },
+        { key: 'depth',              label: 'Cấp độ lồng nhau',        default: true  },
+        { key: 'replyToAuthor',      label: 'Reply tới (tên)',         default: true  },
+        { key: 'profileUrl',         label: 'Link profile',            default: true  },
+        { key: 'isReply',            label: 'Là reply?',               default: false },
+        { key: 'parentId',           label: 'Parent Comment ID',       default: false },
+        { key: 'profileImage',       label: 'Ảnh đại diện (URL)',      default: false },
+        { key: 'hasUnloadedReplies', label: 'Còn reply chưa load',     default: false },
+    ];
 
     // Add floating scrape button with max limit input
     function addUI() {
@@ -59,55 +74,87 @@
             min-width: 250px;
         `;
 
+        const fieldCheckboxes = AVAILABLE_FIELDS.map(f => `
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;padding:3px 0;cursor:${f.required ? 'default' : 'pointer'};">
+                <input type="checkbox" name="fb-field" value="${f.key}"
+                    ${f.default || f.required ? 'checked' : ''}
+                    ${f.required ? 'disabled' : ''}
+                    style="cursor:${f.required ? 'default' : 'pointer'}">
+                ${f.label}${f.required ? ' <em style="color:#aaa;font-size:11px">(bắt buộc)</em>' : ''}
+            </label>
+        `).join('');
+
         container.innerHTML = `
-            <div style="margin-bottom: 10px;">
-                <label style="display: block; font-size: 12px; color: #65676b; margin-bottom: 5px;">
-                    Max Comments (0 = unlimited):
-                </label>
-                <input 
-                    type="number" 
-                    id="fb-max-comments" 
-                    value="0" 
-                    min="0" 
-                    style="
-                        width: 100%;
-                        padding: 8px;
-                        border: 1px solid #ddd;
-                        border-radius: 6px;
-                        font-size: 14px;
-                        box-sizing: border-box;
-                    "
-                    placeholder="0 = unlimited"
-                />
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                <strong style="font-size:14px;color:#1877f2;">FB Comment Scraper</strong>
+                <span style="font-size:10px;color:#aaa;">v1.2</span>
             </div>
-            <button id="fb-scrape-btn" style="
-                width: 100%;
-                padding: 12px 24px;
-                background: #1877f2;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                cursor: pointer;
-                font-weight: bold;
-                font-size: 14px;
-                margin-bottom: 10px;
-            ">📥 Scrape Modal</button>
-            <div id="fb-scrape-stats" style="
-                font-size: 12px;
-                color: #65676b;
-                line-height: 1.6;
-                display: none;
-            ">
+
+            <div style="margin-bottom:10px;">
+                <label style="display:block;font-size:12px;color:#65676b;margin-bottom:4px;">Max Comments (0 = không giới hạn):</label>
+                <input type="number" id="fb-max-comments" value="0" min="0"
+                    style="width:100%;padding:7px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box;"
+                    placeholder="0 = unlimited"/>
+            </div>
+
+            <div style="margin-bottom:10px;">
+                <label style="display:block;font-size:12px;color:#65676b;margin-bottom:4px;">Định dạng xuất:</label>
+                <div style="display:flex;gap:14px;">
+                    <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+                        <input type="radio" name="fb-export-format" value="excel" checked> 📊 Excel (.xlsx)
+                    </label>
+                    <label style="font-size:13px;cursor:pointer;display:flex;align-items:center;gap:4px;">
+                        <input type="radio" name="fb-export-format" value="json"> 📄 JSON
+                    </label>
+                </div>
+            </div>
+
+            <div style="margin-bottom:10px;">
+                <div id="fb-fields-toggle" style="font-size:12px;color:#1877f2;cursor:pointer;user-select:none;display:flex;align-items:center;gap:4px;padding:4px 0;border-top:1px solid #f0f2f5;border-bottom:1px solid #f0f2f5;">
+                    <span id="fb-fields-arrow" style="font-size:10px;">▶</span> Fields cần xuất (click để mở)
+                </div>
+                <div id="fb-fields-container" style="display:none;border:1px solid #e4e6eb;border-top:none;border-radius:0 0 6px 6px;padding:8px 10px;max-height:200px;overflow-y:auto;background:#fafafa;">
+                    <div style="display:flex;gap:6px;margin-bottom:6px;">
+                        <button id="fb-check-all" style="font-size:11px;padding:2px 8px;border:1px solid #ddd;border-radius:4px;cursor:pointer;background:white;">Chọn tất cả</button>
+                        <button id="fb-uncheck-all" style="font-size:11px;padding:2px 8px;border:1px solid #ddd;border-radius:4px;cursor:pointer;background:white;">Bỏ chọn</button>
+                    </div>
+                    ${fieldCheckboxes}
+                </div>
+            </div>
+
+            <button id="fb-scrape-btn" style="width:100%;padding:11px;background:#1877f2;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:bold;font-size:14px;margin-bottom:10px;">
+                📥 Bắt đầu Scrape
+            </button>
+
+            <div id="fb-scrape-stats" style="font-size:12px;color:#65676b;line-height:1.7;display:none;">
                 <div><strong>Status:</strong> <span id="status">Ready</span></div>
-                <div><strong>Main Comments:</strong> <span id="main-count">0</span></div>
-                <div><strong>Replies:</strong> <span id="reply-count">0</span></div>
-                <div><strong>Buttons Clicked:</strong> <span id="button-count">0</span></div>
-                <div><strong>Scraped:</strong> <span id="scraped-count">0</span> / <span id="max-limit">∞</span></div>
+                <div><strong>Main:</strong> <span id="main-count">0</span> &nbsp;|&nbsp; <strong>Replies:</strong> <span id="reply-count">0</span></div>
+                <div><strong>Buttons clicked:</strong> <span id="button-count">0</span></div>
+                <div><strong>Đã cào:</strong> <span id="scraped-count">0</span> / <span id="max-limit">∞</span></div>
             </div>
         `;
 
         document.body.appendChild(container);
         document.getElementById('fb-scrape-btn').onclick = startScraping;
+
+        // Field toggle expand/collapse
+        document.getElementById('fb-fields-toggle').onclick = () => {
+            const cont = document.getElementById('fb-fields-container');
+            const arrow = document.getElementById('fb-fields-arrow');
+            const isOpen = cont.style.display !== 'none';
+            cont.style.display = isOpen ? 'none' : 'block';
+            arrow.textContent = isOpen ? '▶' : '▼';
+        };
+
+        // Check/uncheck all
+        document.getElementById('fb-check-all').onclick = (e) => {
+            e.stopPropagation();
+            document.querySelectorAll('input[name="fb-field"]:not([disabled])').forEach(cb => cb.checked = true);
+        };
+        document.getElementById('fb-uncheck-all').onclick = (e) => {
+            e.stopPropagation();
+            document.querySelectorAll('input[name="fb-field"]:not([disabled])').forEach(cb => cb.checked = false);
+        };
     }
 
     function updateUI(status, data = {}) {
@@ -1278,8 +1325,8 @@
         for (let articleIndex = 0; articleIndex < articles.length; articleIndex++) {
             const article = articles[articleIndex];
 
-            // Check if we've reached the max limit
-            if (maxComments > 0 && scrapedCount >= maxComments) {
+            // Use scrapedArticles.size for total count across all progressive scan calls
+            if (maxComments > 0 && scrapedArticles.size >= maxComments) {
                 console.log(`✅ Reached max limit (${maxComments}), stopping scraping`);
                 break;
             }
@@ -1288,12 +1335,12 @@
 
             if (isCommentArticle(article)) {
 
-                const articleId = article.outerHTML.substring(0, 300);
-                if (scrapedComments.has(articleId)) {
+                // Use DOM element reference for reliable deduplication (outerHTML can be unstable)
+                if (scrapedArticles.has(article)) {
                     skippedCount++;
                     continue;
                 }
-                scrapedComments.add(articleId);
+                scrapedArticles.add(article);
 
                 const comment = extractComment(article, scrapedCount);
 
@@ -1394,6 +1441,57 @@
         return roots;
     }
 
+    function getExportFormat() {
+        const radio = document.querySelector('input[name="fb-export-format"]:checked');
+        return radio ? radio.value : 'excel';
+    }
+
+    function getSelectedFields() {
+        const checkboxes = document.querySelectorAll('input[name="fb-field"]');
+        const selected = [];
+        checkboxes.forEach(cb => {
+            if (cb.checked) {
+                const fieldDef = AVAILABLE_FIELDS.find(f => f.key === cb.value);
+                if (fieldDef) selected.push(fieldDef);
+            }
+        });
+        if (!selected.find(f => f.key === 'text')) {
+            selected.push(AVAILABLE_FIELDS.find(f => f.key === 'text'));
+        }
+        return selected;
+    }
+
+    function downloadExcel(data, filename, selectedFields) {
+        const rows = data.map(comment => {
+            const indent = '  '.repeat(comment.depth || 0);
+            const row = {};
+            row['Thread'] = `${indent}${comment.depth === 0 ? '┌' : '└─'} ${comment.author || '[NO AUTHOR]'}`;
+            selectedFields.forEach(field => {
+                let value = comment[field.key];
+                if (value === undefined || value === null) value = '';
+                if (typeof value === 'boolean') value = value ? 'Yes' : 'No';
+                row[field.label] = value;
+            });
+            return row;
+        });
+
+        const worksheet = XLSX.utils.json_to_sheet(rows);
+
+        // Auto column widths
+        const keys = Object.keys(rows[0] || {});
+        worksheet['!cols'] = keys.map(key => {
+            const maxLen = Math.max(
+                key.length,
+                ...rows.slice(0, 200).map(r => String(r[key] || '').length)
+            );
+            return { wch: Math.min(maxLen + 2, 60) };
+        });
+
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'FB Comments');
+        XLSX.writeFile(workbook, filename);
+    }
+
     function downloadJSON(data, filename, hierarchical = true) {
         let exportData;
 
@@ -1490,7 +1588,7 @@
         console.log(`📊 Max comments limit: ${maxComments === 0 ? 'unlimited' : maxComments}`);
 
         isScrapingInProgress = true;
-        scrapedComments.clear();
+        scrapedArticles.clear();
         articleToCommentMap.clear();
         stats = { mainComments: 0, replies: 0, buttonsClicked: 0 };
 
@@ -1553,7 +1651,7 @@
                     break;
                 }
 
-                if (maxComments > 0 && allCollectedComments.length >= maxComments) {
+                if (maxComments > 0 && scrapedArticles.size >= maxComments) {
                     console.log(`✅ Hit max limit during progressive scan (${maxComments})`);
                     break;
                 }
@@ -1590,14 +1688,20 @@
                 console.warn(`⚠️ ${unloadedCount} comments may have unloaded replies!`);
             }
 
-            // Automatically download JSON (no confirmation dialog)
-            console.log(`💾 Auto-downloading JSON export: fb_modal_${timestamp}.json`);
-            downloadJSON(comments, `fb_modal_${timestamp}.json`);
+            const exportFormat = getExportFormat();
+            const selectedFields = getSelectedFields();
 
-            updateUI('✅ Done!', {
-                statusText: 'JSON Downloaded',
-                showStats: true
-            });
+            if (exportFormat === 'excel') {
+                const xlsxFile = `fb_comments_${timestamp}.xlsx`;
+                console.log(`💾 Downloading Excel: ${xlsxFile} (${selectedFields.map(f => f.key).join(', ')})`);
+                downloadExcel(comments, xlsxFile, selectedFields);
+                updateUI('✅ Done!', { statusText: `Excel (${comments.length} rows)`, showStats: true });
+            } else {
+                const jsonFile = `fb_comments_${timestamp}.json`;
+                console.log(`💾 Downloading JSON: ${jsonFile}`);
+                downloadJSON(comments, jsonFile);
+                updateUI('✅ Done!', { statusText: `JSON (${comments.length} items)`, showStats: true });
+            }
 
             setTimeout(() => {
                 updateUI('📥 Scrape Modal', { showStats: false });
