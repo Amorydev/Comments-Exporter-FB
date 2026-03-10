@@ -4,8 +4,8 @@
 // @version      1.2
 // @description  Open-source Facebook comment scraper with nested reply support, auto-downloads JSON export, hierarchical structure, multi-language support, and progressive virtual-scroll scraping
 // @author       Rick Bouma (Disrex Group)
-// @downloadURL  https://github.com/disrex-group/FB-Comments-Exporter-User-script/raw/refs/heads/master/facebook-comment-scraper.user.js
-// @updateURL    https://github.com/disrex-group/FB-Comments-Exporter-User-script/raw/refs/heads/master/facebook-comment-scraper.user.js
+// @downloadURL  https://github.com/Amorydev/Comments-Exporter-FB/raw/refs/heads/main/facebook-comment-scraper.user.js
+// @updateURL    https://github.com/Amorydev/Comments-Exporter-FB/raw/refs/heads/main/facebook-comment-scraper.user.js
 // @match        https://www.facebook.com/*
 // @match        https://m.facebook.com/*
 // @grant        none

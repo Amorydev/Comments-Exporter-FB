@@ -26,7 +26,7 @@
 ## 🚀 Quickstart
 
 1. **Install Extension**: [Tampermonkey](https://tampermonkey.net/) (Chrome/Edge) or [Greasemonkey](https://addons.mozilla.org/en-US/firefox/addon/greasemonkey/) (Firefox)
-2. **Install Script**: [Click here to install the userscript](https://github.com/disrex-group/FB-Comments-Exporter-User-script/raw/refs/heads/master/facebook-comment-scraper.user.js)
+2. **Install Script**: [Click here to install the userscript](https://github.com/Amorydev/Comments-Exporter-FB/raw/refs/heads/main/facebook-comment-scraper.user.js)
 3. **Open any Facebook post** with comments
 4. **Click "Start Scraping"** in the floating panel (top-right corner)
 5. **Watch it work** - automatically expands replies, detects nesting depth, highlights comments
@@ -83,12 +83,12 @@ The Facebook Comment Scraper is a powerful userscript that enables you to scrape
 
 Click the button below to install the Facebook Comment Scraper:
 
-[![Install Facebook Comment Scraper](https://img.shields.io/badge/Install-Facebook%20Comment%20Scraper-brightgreen)](https://github.com/disrex-group/FB-Comments-Exporter-User-script/raw/refs/heads/master/facebook-comment-scraper.user.js)
+[![Install Facebook Comment Scraper](https://img.shields.io/badge/Install-Facebook%20Comment%20Scraper-brightgreen)](https://github.com/Amorydev/Comments-Exporter-FB/raw/refs/heads/main/facebook-comment-scraper.user.js)
 
 ### Manual Installation
 
 1. Install Tampermonkey or Greasemonkey for your browser
-2. Navigate to the [raw userscript file](https://github.com/disrex-group/FB-Comments-Exporter-User-script/raw/refs/heads/master/facebook-comment-scraper.user.js)
+2. Navigate to the [raw userscript file](https://github.com/Amorydev/Comments-Exporter-FB/raw/refs/heads/main/facebook-comment-scraper.user.js)
 3. Your userscript manager will prompt you to install it
 4. Click "Install" to add the script
 
