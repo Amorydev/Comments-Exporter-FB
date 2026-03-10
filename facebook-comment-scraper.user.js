@@ -32,7 +32,9 @@
     'use strict';
 
     let isScrapingInProgress = false;
-    let scrapedArticles = new Set(); // Stores actual DOM element references for reliable deduplication
+    let scrapedArticles = new Set();    // DOM elements already processed (deduplication)
+    let observedArticles = new Set();   // ALL articles ever seen in DOM (via MutationObserver)
+    let articleObserver = null;
     let articleToCommentMap = new Map();
     let replyButtonParentMap = new Map();
     let stats = {
@@ -40,6 +42,46 @@
         replies: 0,
         buttonsClicked: 0
     };
+
+    // MutationObserver: capture every article the moment it enters the DOM.
+    // Critical for Facebook's virtual DOM - elements may be added then removed as user scrolls.
+    // Storing references means we can still extract data even after they're detached.
+    function startArticleObserver(modal) {
+        if (articleObserver) articleObserver.disconnect();
+        observedArticles.clear();
+
+        // Seed with articles already in DOM
+        modal.querySelectorAll('[role="article"]').forEach(a => {
+            if (isCommentArticle(a)) observedArticles.add(a);
+        });
+
+        articleObserver = new MutationObserver((mutations) => {
+            for (const mutation of mutations) {
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType !== 1) continue;
+                    if (node.matches && node.matches('[role="article"]') && isCommentArticle(node)) {
+                        observedArticles.add(node);
+                    }
+                    if (node.querySelectorAll) {
+                        node.querySelectorAll('[role="article"]').forEach(a => {
+                            if (isCommentArticle(a)) observedArticles.add(a);
+                        });
+                    }
+                }
+            }
+        });
+
+        articleObserver.observe(modal, { childList: true, subtree: true });
+        console.log(`👁️ MutationObserver started. Already tracking ${observedArticles.size} articles.`);
+    }
+
+    function stopArticleObserver() {
+        if (articleObserver) {
+            articleObserver.disconnect();
+            articleObserver = null;
+            console.log(`👁️ MutationObserver stopped. Total unique articles captured: ${observedArticles.size}`);
+        }
+    }
 
     const AVAILABLE_FIELDS = [
         { key: 'author',             label: 'Tên tác giả',            default: true  },
@@ -225,7 +267,7 @@
             modal.querySelector('.xb57i2i') ||
             modal;
 
-        const scrollAttempts = 6;
+        const scrollAttempts = 4;
         let newContentLoaded = false;
         const previousHeight = scrollContainer.scrollHeight;
 
@@ -237,7 +279,7 @@
                 showStats: true
             });
 
-            await sleep(1200);
+            await sleep(500);
         }
 
         const newHeight = scrollContainer.scrollHeight;
@@ -380,30 +422,14 @@
 
                 if (matchesReply) {
                     try {
-                        // ALWAYS scroll into view first - don't check viewport beforehand
-                        // This ensures nested buttons get revealed before clicking
-                        console.log(`🎯 Attempting to click: "${text.substring(0, 50)}"`);
-                        btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        await sleep(600);  // Wait for scroll animation and content load
+                        btn.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+                        await sleep(100);
 
-                        // Double-check the button is actually visible after scrolling
                         if (!isInModalViewport(btn, modal)) {
                             foundButNotInViewport++;
-                            console.log(`⏭️ Still not visible after scroll: "${text.substring(0, 40)}"`);
                             continue;
                         }
 
-                        // NEW: Track which article this reply button belongs to
-                        const parentArticle = btn.closest('[role="article"]');
-                        if (parentArticle) {
-                            const articlesBeforeClick = new Set(modal.querySelectorAll('[role="article"]'));
-                            replyButtonParentMap.set(parentArticle, {
-                                clickedAt: Date.now(),
-                                articlesBeforeClick: articlesBeforeClick
-                            });
-                        }
-
-                        // Prevent default navigation for links
                         if (btn.tagName === 'A') {
                             btn.addEventListener('click', (e) => e.preventDefault(), { once: true });
                         }
@@ -412,8 +438,7 @@
                         clickedThisRound++;
                         totalClickedThisCall++;
                         stats.buttonsClicked++;
-                        console.log(`✓ Reply clicked: "${text.substring(0, 50)}"`);
-                        await sleep(1000);  // Longer wait for nested content to fully load
+                        await sleep(350);
                     } catch (e) {
                         console.log('❌ Click failed:', e);
                     }
@@ -436,30 +461,19 @@
                 break;
             }
 
-            // If buttons exist but aren't visible, scroll more aggressively
             if (clickedThisRound === 0 && foundButNotInViewport > 0) {
-                console.log(`⚠️ Found ${foundButNotInViewport} reply buttons still not visible after scroll attempts`);
-                console.log(`📜 Attempting more aggressive modal scroll...`);
-
-                // Scroll the modal to reveal more content
                 const scrollContainer = modal.querySelector('[style*="overflow"]') || modal;
                 const currentScroll = scrollContainer.scrollTop;
-
-                // More aggressive scroll - 1000px instead of 500px
-                scrollContainer.scrollTop += 1000;
-                await sleep(800);  // Longer wait for content to load
-
-                // If scroll didn't move, we're at the bottom
+                scrollContainer.scrollTop += 1200;
+                await sleep(400);
                 if (scrollContainer.scrollTop === currentScroll) {
-                    console.log('⏸️ Reached bottom of modal - cannot scroll further');
+                    console.log('⏸️ Reached bottom of modal');
                     break;
                 }
-
-                console.log(`✓ Scrolled from ${currentScroll}px to ${scrollContainer.scrollTop}px`);
             }
 
             iteration++;
-            await sleep(300);
+            await sleep(100);
         }
 
         const finalCount = getCurrentCommentCount(modal);
@@ -519,16 +533,10 @@
 
             if (matchesViewMore) {
                 try {
-                    // CRITICAL FIX: Scroll to button first (like expandAllReplies does)
-                    // Previously skipped off-screen buttons, causing missed "load more" clicks
-                    console.log(`🎯 View more: attempting "${text.substring(0, 50)}"`);
-                    btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    await sleep(700);
+                    btn.scrollIntoView({ behavior: 'instant', block: 'nearest' });
+                    await sleep(100);
 
-                    if (!isInModalViewport(btn, modal)) {
-                        console.log(`⏭️ Still not visible after scroll, skipping`);
-                        continue;
-                    }
+                    if (!isInModalViewport(btn, modal)) continue;
 
                     if (btn.tagName === 'A') {
                         btn.addEventListener('click', (e) => e.preventDefault(), { once: true });
@@ -538,7 +546,7 @@
                     clickedThisRound++;
                     stats.buttonsClicked++;
                     console.log(`✓ View more clicked: "${text.substring(0, 50)}"`);
-                    await sleep(1500);
+                    await sleep(600);
                 } catch (e) {
                     console.log('Click failed:', e);
                 }
@@ -624,9 +632,7 @@
             }
 
             cycle++;
-
-            // Small pause before next cycle
-            await sleep(500);
+            await sleep(100);
         }
 
         const finalCount = getCurrentCommentCount(modal);
@@ -1310,11 +1316,16 @@
     }
 
     // Scrape modal comments with max limit
-    function scrapeModalComments(modal, maxComments) {
+    // extraArticles: optional Set of DOM elements captured by MutationObserver (may be detached)
+    function scrapeModalComments(modal, maxComments, extraArticles = null) {
         console.log('🔍 Scraping...');
 
         const comments = [];
-        const articles = Array.from(modal.querySelectorAll('[role="article"]'));
+        const domArticles = Array.from(modal.querySelectorAll('[role="article"]'));
+        // Merge DOM articles with observer-captured articles (unique by reference)
+        const articles = extraArticles
+            ? Array.from(new Set([...domArticles, ...extraArticles]))
+            : domArticles;
 
         console.log(`Found ${articles.length} articles`);
 
@@ -1589,6 +1600,7 @@
 
         isScrapingInProgress = true;
         scrapedArticles.clear();
+        observedArticles.clear();
         articleToCommentMap.clear();
         stats = { mainComments: 0, replies: 0, buttonsClicked: 0 };
 
@@ -1603,21 +1615,22 @@
         });
 
         try {
-            // Start expansion (uses incremental scrolling internally)
+            // Start MutationObserver BEFORE expansion so every article loaded is captured,
+            // even if Facebook's virtual DOM removes it from DOM before we scrape.
+            startArticleObserver(modal);
+
             await expandAllInModal(modal, maxComments);
 
-            updateUI('⏳ Waiting...', { statusText: 'Settling DOM' });
-            console.log('⏳ Waiting 5 seconds for Facebook to render all nested content...');
-            await sleep(5000);
+            stopArticleObserver();
 
-            // Analyze what's actually in the DOM
+            updateUI('⏳ Waiting...', { statusText: 'Settling DOM' });
+            await sleep(1000);
+
             analyzeArticleStructure(modal);
 
-            // PROGRESSIVE SCRAPING: Scroll from top to bottom slowly, scraping at each position.
-            // This is critical because Facebook may use virtual scrolling that unloads
-            // off-screen comments from the DOM. By collecting at each scroll position,
-            // we capture comments before they get unloaded.
-            console.log('📜 Progressive scroll-scrape: starting from top...');
+            // PROGRESSIVE SCRAPING: Scroll top→bottom, scraping at each position.
+            // Handles Facebook virtual DOM that removes off-screen articles.
+            console.log(`📜 Progressive scan starting. Observer captured ${observedArticles.size} unique articles total.`);
             updateUI('🔍 Scraping...', { statusText: 'Progressive scan' });
 
             const scrollContainer = modal.querySelector('[style*="overflow"]') ||
@@ -1625,10 +1638,10 @@
                 modal;
 
             scrollContainer.scrollTop = 0;
-            await sleep(800);
+            await sleep(400);
 
             const allCollectedComments = [];
-            const scrollStep = 600;
+            const scrollStep = 1000;
 
             while (true) {
                 const batch = scrapeModalComments(modal, maxComments);
@@ -1645,22 +1658,20 @@
 
                 const prevPos = scrollContainer.scrollTop;
                 scrollContainer.scrollTop += scrollStep;
-                await sleep(700);
+                await sleep(250);
 
-                if (scrollContainer.scrollTop === prevPos) {
-                    break;
-                }
+                if (scrollContainer.scrollTop === prevPos) break;
 
                 if (maxComments > 0 && scrapedArticles.size >= maxComments) {
-                    console.log(`✅ Hit max limit during progressive scan (${maxComments})`);
+                    console.log(`✅ Hit max limit (${maxComments})`);
                     break;
                 }
             }
 
-            // Final pass at bottom
-            const finalBatch = scrapeModalComments(modal, maxComments);
-            allCollectedComments.push(...finalBatch);
-            console.log(`📊 Progressive scan complete. Collected ${allCollectedComments.length} comments total.`);
+            // Final pass: process ALL observer-captured articles (includes detached/unloaded ones)
+            const observerBatch = scrapeModalComments(modal, maxComments, observedArticles);
+            allCollectedComments.push(...observerBatch);
+            console.log(`📊 Scan complete: ${allCollectedComments.length} from DOM scroll + ${observerBatch.length} recovered from observer. Total: ${allCollectedComments.length}`);
 
             const comments = allCollectedComments;
 
@@ -1708,6 +1719,7 @@
             }, 5000);
 
         } catch (error) {
+            stopArticleObserver();
             console.error('❌ Error:', error);
             alert('Error! Check console.');
             updateUI('❌ Error', { statusText: 'Failed' });
