@@ -319,13 +319,13 @@
         }
         // Fallback: profile link + meaningful text content.
         // Deliberately loose — better to include a non-comment than to miss a real comment.
-        // The extractComment filter (text.length > 5) acts as the real quality gate.
+        // The extractComment pattern filters act as the real quality gate, not length.
         const hasProfileLink = article.querySelector('a[href*="facebook.com"], a[href^="/"]');
         if (!hasProfileLink) return false;
 
         const textDivs = article.querySelectorAll('div[dir="auto"]');
         for (const div of textDivs) {
-            if (div.textContent.trim().length > 2) return true;
+            if (div.textContent.trim().length >= 1) return true;
         }
         return false;
     }
@@ -340,7 +340,7 @@
                 const textDivs = article.querySelectorAll('div[dir="auto"]');
                 for (let div of textDivs) {
                     const text = div.textContent.trim();
-                    if (text.length > 5) {
+                    if (text.length >= 1) {
                         count++;
                         break;
                     }
@@ -781,13 +781,16 @@
             }
 
             // Extract comment text
+            // Threshold is >= 1 to capture short/emoji-only comments like "Môm", "OK", "😂"
+            // Noise is excluded by the pattern filters below, not by length
             const textDivs = article.querySelectorAll('div[dir="auto"]');
             for (let div of textDivs) {
                 const text = div.textContent.trim();
 
-                if (text.length > 5 &&
+                if (text.length >= 1 &&
                     text !== comment.author &&
                     !text.match(/^\d+\s*(min|hr|h|d|w|m|s|uur|dag|geleden|ago)/i) &&
+                    !text.match(/^(Thích|Trả lời|Chia sẻ|Like|Reply|Share|Reageren|Delen|Gefällt mir|Antworten)$/i) &&
                     !text.includes('heeft geantwoord') &&
                     !text.includes('replied') &&
                     !text.includes('antwoord bekijken') &&
