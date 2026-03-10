@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Facebook Comment Exporter
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  Open-source Facebook comment scraper with nested reply support, auto-downloads JSON export, hierarchical structure, multi-language support, and progressive virtual-scroll scraping
 // @author       Rick Bouma (Disrex Group)
 // @downloadURL  https://github.com/Amorydev/Comments-Exporter-FB/raw/refs/heads/main/facebook-comment-scraper.user.js
@@ -32,8 +32,10 @@
     'use strict';
 
     let isScrapingInProgress = false;
+    let stopRequested = false;          // Set to true when user clicks Stop
     let scrapedArticles = new Set();    // DOM elements successfully extracted (deduplication)
     let observedArticles = new Set();   // ALL articles ever seen in DOM (via MutationObserver)
+    let clickedButtons = new Set();     // DOM elements of buttons already clicked (prevent re-click)
     let articleObserver = null;
     let articleToCommentMap = new Map();
     let replyButtonParentMap = new Map();
@@ -166,7 +168,7 @@
         container.innerHTML = `
             <div id="fb-scraper-header" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;cursor:move;user-select:none;padding-bottom:8px;border-bottom:1px solid #f0f2f5;">
                 <strong style="font-size:14px;color:#1877f2;">⠿ FB Comment Scraper</strong>
-                <span style="font-size:10px;color:#aaa;">v1.3</span>
+                <span style="font-size:10px;color:#aaa;">v1.4</span>
             </div>
 
             <div style="margin-bottom:10px;">
@@ -201,9 +203,14 @@
                 </div>
             </div>
 
-            <button id="fb-scrape-btn" style="width:100%;padding:11px;background:#1877f2;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:bold;font-size:14px;margin-bottom:10px;">
-                📥 Bắt đầu Scrape
-            </button>
+            <div style="display:flex;gap:8px;margin-bottom:10px;">
+                <button id="fb-scrape-btn" style="flex:1;padding:11px;background:#1877f2;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:bold;font-size:14px;">
+                    📥 Bắt đầu Scrape
+                </button>
+                <button id="fb-stop-btn" style="flex:0 0 auto;padding:11px 14px;background:#e4194a;color:white;border:none;border-radius:8px;cursor:pointer;font-weight:bold;font-size:14px;display:none;" title="Dừng và xuất kết quả đã cào được">
+                    ⏹ Stop
+                </button>
+            </div>
 
             <div id="fb-scrape-stats" style="font-size:12px;color:#65676b;line-height:1.7;display:none;">
                 <div><strong>Status:</strong> <span id="status">Ready</span></div>
@@ -216,6 +223,12 @@
 
         document.body.appendChild(container);
         document.getElementById('fb-scrape-btn').onclick = startScraping;
+        document.getElementById('fb-stop-btn').onclick = () => {
+            if (!isScrapingInProgress) return;
+            stopRequested = true;
+            const stopBtn = document.getElementById('fb-stop-btn');
+            if (stopBtn) { stopBtn.disabled = true; stopBtn.textContent = '⏳ Đang dừng...'; }
+        };
 
         // Field toggle expand/collapse
         document.getElementById('fb-fields-toggle').onclick = () => {
@@ -425,6 +438,8 @@
         let totalClickedThisCall = 0;
 
         while (iteration < maxIterations) {
+            if (stopRequested) break;
+
             let clickedThisRound = 0;
             let foundButNotInViewport = 0;
 
@@ -472,20 +487,20 @@
                 /\d+\s+comment replies/i,
             ];
 
-            const allButtons = modal.querySelectorAll('div[role="button"], span[role="button"], a[href], span');
-            console.log(`🔍 Found ${allButtons.length} potential buttons to check`);
+            // Use [role="button"] only — bare `span` would match 100k+ elements in large threads
+            // and force layout reflow via innerText on each one (major perf killer)
+            const allButtons = modal.querySelectorAll('[role="button"], a[href^="/"]');
 
             for (let btn of allButtons) {
-                // Skip navigation links (prevent opening new tabs)
+                if (stopRequested) break;
+                if (clickedButtons.has(btn)) continue; // skip already-clicked buttons
+
                 if (btn.tagName === 'A') {
-                    const href = btn.getAttribute('href');
-                    // Skip if it's a profile link, photo link, or external link
-                    if (href && (href.startsWith('#') || href.startsWith('http'))) {
-                        continue;  // Skip actual navigation links
-                    }
+                    const href = btn.getAttribute('href') || '';
+                    if (href.startsWith('http') || href.startsWith('#')) continue;
                 }
 
-                const text = btn.innerText || btn.textContent || '';
+                const text = btn.textContent || '';
                 const matchesReply = replyPatterns.some(pattern => pattern.test(text));
 
                 if (matchesReply) {
@@ -503,6 +518,7 @@
                         }
 
                         btn.click();
+                        clickedButtons.add(btn); // mark as clicked
                         clickedThisRound++;
                         totalClickedThisCall++;
                         stats.buttonsClicked++;
@@ -589,17 +605,18 @@
             /load\s+more\s+comment/i,
         ];
 
-        const allButtons = modal.querySelectorAll('div[role="button"], span[role="button"], a[href], span');
+        const allButtons = modal.querySelectorAll('[role="button"], a[href^="/"]');
 
         for (let btn of allButtons) {
+            if (stopRequested) break;
+            if (clickedButtons.has(btn)) continue;
+
             if (btn.tagName === 'A') {
-                const href = btn.getAttribute('href');
-                if (href && (href.startsWith('#') || href.startsWith('http'))) {
-                    continue;
-                }
+                const href = btn.getAttribute('href') || '';
+                if (href.startsWith('http') || href.startsWith('#')) continue;
             }
 
-            const text = btn.innerText || btn.textContent || '';
+            const text = btn.textContent || '';
             const matchesViewMore = viewMoreCommentPatterns.some(pattern => pattern.test(text));
 
             if (matchesViewMore) {
@@ -614,6 +631,7 @@
                     }
 
                     btn.click();
+                    clickedButtons.add(btn);
                     clickedThisRound++;
                     stats.buttonsClicked++;
                     console.log(`✓ View more clicked: "${text.substring(0, 50)}"`);
@@ -639,6 +657,10 @@
         let consecutiveEmptyCycles = 0;
 
         while (cycle < maxCycles) {
+            if (stopRequested) {
+                console.log('⏹ Stop requested — aborting expansion.');
+                break;
+            }
             console.log(`\n=== Cycle ${cycle + 1} ===`);
 
             const currentCount = getCurrentCommentCount(modal);
@@ -1722,11 +1744,18 @@
         console.log(`📊 Max comments limit: ${maxComments === 0 ? 'unlimited' : maxComments}`);
 
         isScrapingInProgress = true;
+        stopRequested = false;
         scrapedArticles.clear();
         observedArticles.clear();
+        clickedButtons.clear();
         articleToCommentMap.clear();
         stats = { mainComments: 0, replies: 0, buttonsClicked: 0 };
         startTimer();
+
+        const scrapeBtn = document.getElementById('fb-scrape-btn');
+        const stopBtn  = document.getElementById('fb-stop-btn');
+        if (scrapeBtn) scrapeBtn.disabled = true;
+        if (stopBtn)  { stopBtn.style.display = 'block'; stopBtn.disabled = false; stopBtn.textContent = '⏹ Stop'; }
 
         updateUI('🔄 Starting...', {
             statusText: 'Init',
@@ -1748,9 +1777,7 @@
             stopArticleObserver();
 
             updateUI('⏳ Waiting...', { statusText: 'Settling DOM' });
-            await sleep(1000);
-
-            analyzeArticleStructure(modal);
+            await sleep(500);
 
             // PROGRESSIVE SCRAPING: Scroll top→bottom, scraping at each position.
             // Handles Facebook virtual DOM that removes off-screen articles.
@@ -1768,6 +1795,11 @@
             const scrollStep = 1000;
 
             while (true) {
+                if (stopRequested) {
+                    console.log('⏹ Stop requested — ending progressive scan.');
+                    break;
+                }
+
                 const batch = scrapeModalComments(modal, maxComments);
                 allCollectedComments.push(...batch);
 
@@ -1793,9 +1825,13 @@
             }
 
             // Final pass: process ALL observer-captured articles (includes detached/unloaded ones)
-            const observerBatch = scrapeModalComments(modal, maxComments, observedArticles);
-            allCollectedComments.push(...observerBatch);
-            console.log(`📊 Scan complete: ${allCollectedComments.length} from DOM scroll + ${observerBatch.length} recovered from observer. Total: ${allCollectedComments.length}`);
+            if (!stopRequested) {
+                const observerBatch = scrapeModalComments(modal, maxComments, observedArticles);
+                allCollectedComments.push(...observerBatch);
+                console.log(`📊 Scan complete: ${allCollectedComments.length} from DOM scroll + ${observerBatch.length} recovered from observer. Total: ${allCollectedComments.length}`);
+            } else {
+                console.log(`⏹ Stopped. Exporting ${allCollectedComments.length} collected so far.`);
+            }
 
             const comments = allCollectedComments;
 
@@ -1826,16 +1862,17 @@
             const exportFormat = getExportFormat();
             const selectedFields = getSelectedFields();
 
+            const doneLabel = stopRequested ? '⏹ Stopped!' : '✅ Done!';
             if (exportFormat === 'excel') {
                 const xlsxFile = `fb_comments_${timestamp}.xlsx`;
                 console.log(`💾 Downloading Excel: ${xlsxFile} (${selectedFields.map(f => f.key).join(', ')})`);
                 downloadExcel(comments, xlsxFile, selectedFields);
-                updateUI('✅ Done!', { statusText: `Excel (${comments.length} rows)`, showStats: true });
+                updateUI(doneLabel, { statusText: `Excel (${comments.length} rows)`, showStats: true });
             } else {
                 const jsonFile = `fb_comments_${timestamp}.json`;
                 console.log(`💾 Downloading JSON: ${jsonFile}`);
                 downloadJSON(comments, jsonFile);
-                updateUI('✅ Done!', { statusText: `JSON (${comments.length} items)`, showStats: true });
+                updateUI(doneLabel, { statusText: `JSON (${comments.length} items)`, showStats: true });
             }
 
             setTimeout(() => {
@@ -1846,7 +1883,7 @@
             stopArticleObserver();
             stopTimer();
             console.error('❌ Error:', error);
-            alert('Error! Check console.');
+            if (!stopRequested) alert('Error! Check console.');
             updateUI('❌ Error', { statusText: 'Failed' });
             setTimeout(() => {
                 updateUI('📥 Scrape Modal', { showStats: false });
@@ -1854,6 +1891,11 @@
         } finally {
             stopTimer();
             isScrapingInProgress = false;
+            stopRequested = false;
+            const scrapeBtnF = document.getElementById('fb-scrape-btn');
+            const stopBtnF   = document.getElementById('fb-stop-btn');
+            if (scrapeBtnF) scrapeBtnF.disabled = false;
+            if (stopBtnF)  stopBtnF.style.display = 'none';
         }
     }
 
