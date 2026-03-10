@@ -299,17 +299,17 @@
 
     // Keywords that indicate a comment/reply article in various languages
     const COMMENT_ARIA_KEYWORDS = [
-        'Opmerking', 'Antwoord',          // Dutch
-        'Comment', 'Reply',                // English
+        'Opmerking', 'Antwoord',                    // Dutch
+        'Comment', 'Reply',                          // English
         'comment', 'reply',
-        'Bình luận', 'Phản hồi',          // Vietnamese
-        'Commentaire', 'Réponse',          // French
-        'Comentario', 'Respuesta',         // Spanish
-        'Comentário', 'Resposta',          // Portuguese
-        'Kommentar', 'Antwort',            // German
-        'Commento', 'Risposta',            // Italian
-        '댓글', '답글',                    // Korean
-        'コメント', '返信',                 // Japanese
+        'Bình luận', 'Phản hồi', 'Trả lời',        // Vietnamese ("Trả lời" = reply, commonly used for nested replies)
+        'Commentaire', 'Réponse',                    // French
+        'Comentario', 'Respuesta',                   // Spanish
+        'Comentário', 'Resposta',                    // Portuguese
+        'Kommentar', 'Antwort',                      // German
+        'Commento', 'Risposta',                      // Italian
+        '댓글', '답글',                              // Korean
+        'コメント', '返信',                           // Japanese
     ];
 
     function isCommentArticle(article) {
@@ -317,14 +317,15 @@
         if (ariaLabel && COMMENT_ARIA_KEYWORDS.some(kw => ariaLabel.includes(kw))) {
             return true;
         }
-        // Fallback: no aria-label but has profile link + text content (typical comment structure)
-        if (!ariaLabel) {
-            const hasProfileLink = article.querySelector('a[href*="facebook.com"], a[href^="/"]');
-            const hasText = article.querySelector('div[dir="auto"]');
-            const hasActionBar = article.querySelector('[role="button"]');
-            if (hasProfileLink && hasText && hasActionBar) {
-                return true;
-            }
+        // Fallback: profile link + meaningful text content.
+        // Deliberately loose — better to include a non-comment than to miss a real comment.
+        // The extractComment filter (text.length > 5) acts as the real quality gate.
+        const hasProfileLink = article.querySelector('a[href*="facebook.com"], a[href^="/"]');
+        if (!hasProfileLink) return false;
+
+        const textDivs = article.querySelectorAll('div[dir="auto"]');
+        for (const div of textDivs) {
+            if (div.textContent.trim().length > 2) return true;
         }
         return false;
     }
@@ -382,6 +383,10 @@
                 /xem th[eê]m ph[aả]n h[oồ][iì]/i,
                 /\d+\s+ph[aả]n\s+h[oồ][iì]/i,
                 /ph[aả]n h[oồ][iì] tr[uướ][oớ]c/i,
+                /xem\s+\d+\s+tr[aả]\s+l[oờ][iì]/i,
+                /xem th[eê]m tr[aả] l[oờ][iì]/i,
+                /\d+\s+tr[aả]\s+l[oờ][iì]/i,
+                /tr[aả] l[oờ][iì] tr[uướ][oớ]c/i,
                 // French
                 /voir\s+\d+\s+r[eé]ponses/i,
                 /voir plus de r[eé]ponses/i,
@@ -499,6 +504,9 @@
             /xem th[eê]m b[iì]nh lu[aậ]n/i,
             /xem\s+\d+\s+b[iì]nh lu[aậ]n/i,
             /b[iì]nh lu[aậ]n tr[uướ][oớ]c/i,
+            /xem th[eê]m tr[aả] l[oờ][iì]/i,
+            /xem\s+\d+\s+tr[aả]\s+l[oờ][iì]/i,
+            /tr[aả] l[oờ][iì] tr[uướ][oớ]c/i,
             // French
             /voir plus de commentaires/i,
             /voir\s+\d+\s+commentaires/i,
